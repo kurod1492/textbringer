@@ -33,4 +33,7 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "test-unit"
   spec.add_development_dependency "simplecov"
   spec.add_development_dependency "ripper-tags"
+
+  spec.add_development_dependency "commonmarker"
+  spec.add_development_dependency "github-markup"
 end
