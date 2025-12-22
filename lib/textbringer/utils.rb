@@ -139,7 +139,8 @@ module Textbringer
 
     def read_from_minibuffer(prompt, completion_proc: nil, default: nil,
                              initial_value: nil, completion_ignore_case: false,
-                             keymap: MINIBUFFER_LOCAL_MAP)
+                             keymap: MINIBUFFER_LOCAL_MAP,
+                             history: nil)
       if Window.echo_area.active?
         raise EditorError,
           "Command attempted to use minibuffer while in minibuffer"
@@ -149,11 +150,17 @@ module Textbringer
       Window.minibuffer_selected = Window.current
       old_completion_proc = Buffer.minibuffer[:completion_proc]
       old_completion_ignore_case = Buffer.minibuffer[:completion_ignore_case]
+      old_history = Buffer.minibuffer[:history]
+      old_history_index = Buffer.minibuffer[:history_index]
+      old_history_input = Buffer.minibuffer[:history_input]
       old_current_prefix_arg = Controller.current.current_prefix_arg
       old_minibuffer_map = Buffer.minibuffer.keymap
       Buffer.minibuffer.keymap = keymap
       Buffer.minibuffer[:completion_proc] = completion_proc
       Buffer.minibuffer[:completion_ignore_case] = completion_ignore_case
+      Buffer.minibuffer[:history] = history
+      Buffer.minibuffer[:history_index] = -1
+      Buffer.minibuffer[:history_input] = nil
       Window.echo_area.active = true
       begin
         Window.current = Window.echo_area
@@ -167,11 +174,16 @@ module Textbringer
         Window.update
         recursive_edit
         s = Buffer.minibuffer.to_s
-        if default && s.empty?
+        result = if default && s.empty?
           default
         else
           s
         end
+        # Add to history if using symbol-based history
+        if history.is_a?(Symbol) && result && !result.empty?
+          MinibufferHistory.add(history, result)
+        end
+        result
       ensure
         Window.echo_area.clear
         Window.echo_area.redisplay
@@ -184,6 +196,9 @@ module Textbringer
         Window.minibuffer_selected = old_minibuffer_selected
         Buffer.minibuffer[:completion_ignore_case] = old_completion_ignore_case
         Buffer.minibuffer[:completion_proc] = old_completion_proc
+        Buffer.minibuffer[:history] = old_history
+        Buffer.minibuffer[:history_index] = old_history_index
+        Buffer.minibuffer[:history_input] = old_history_input
         Buffer.minibuffer.keymap = old_minibuffer_map
         Buffer.minibuffer.disable_input_method
         Controller.current.current_prefix_arg = old_current_prefix_arg
@@ -198,7 +213,7 @@ module Textbringer
       end
     end
 
-    def read_file_name(prompt, default: nil)
+    def read_file_name(prompt, default: nil, history: :file)
       f = ->(s) {
         s = File.expand_path(s) if s.start_with?("~")
         Dir.glob(s + "*").map { |file|
@@ -213,7 +228,8 @@ module Textbringer
       ignore_case = CONFIG[:read_file_name_completion_ignore_case]
       file = read_from_minibuffer(prompt, completion_proc: f,
                                   initial_value: initial_value,
-                                  completion_ignore_case: ignore_case)
+                                  completion_ignore_case: ignore_case,
+                                  history: history)
       File.expand_path(file)
     end
 
@@ -221,16 +237,17 @@ module Textbringer
       candidates.select { |i| i.start_with?(s) }
     end
 
-    def read_buffer(prompt, default: Buffer.other.name)
+    def read_buffer(prompt, default: Buffer.other.name, history: :buffer)
       f = ->(s) { complete_for_minibuffer(s, Buffer.names) }
-      read_from_minibuffer(prompt, completion_proc: f, default: default)
+      read_from_minibuffer(prompt, completion_proc: f, default: default,
+                           history: history)
     end
 
-    def read_command_name(prompt)
+    def read_command_name(prompt, history: :command)
       f = ->(s) {
         complete_for_minibuffer(s.tr("-", "_"), Commands.list.map(&:to_s))
       }
-      read_from_minibuffer(prompt, completion_proc: f)
+      read_from_minibuffer(prompt, completion_proc: f, history: history)
     end
 
     def read_encoding(prompt, **opts)

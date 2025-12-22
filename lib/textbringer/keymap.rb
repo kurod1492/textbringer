@@ -244,4 +244,6 @@ module Textbringer
   MINIBUFFER_LOCAL_MAP.define_key("\C-m", :exit_recursive_edit)
   MINIBUFFER_LOCAL_MAP.define_key(?\t, :complete_minibuffer)
   MINIBUFFER_LOCAL_MAP.define_key(?\C-g, :abort_recursive_edit)
+  MINIBUFFER_LOCAL_MAP.define_key("\M-p", :previous_history_element)
+  MINIBUFFER_LOCAL_MAP.define_key("\M-n", :next_history_element)
 end
