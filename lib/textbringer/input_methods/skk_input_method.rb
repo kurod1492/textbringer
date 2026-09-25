@@ -140,6 +140,12 @@ module Textbringer
       @candidate_index = 0
       @marker_pos = nil
       @lookup_key = nil
+      # Yomi completion state: the yomi it started from, the matching
+      # user-dictionary keys, and the index of the one currently shown.
+      @comp_prefix = nil
+      @comp_candidates = nil
+      @comp_index = nil
+      @comp_message_shown = false
       @okuriiari = nil
       @okurinasi = nil
       @user_okuriiari = nil
@@ -265,8 +271,24 @@ module Textbringer
     end
 
     def handle_converting(event)
+      # Like ddskk, any key clears the message a completion left behind.
+      if @comp_message_shown
+        Window.echo_area.clear_message
+        @comp_message_shown = false
+      end
+
       if backspace_event?(event)
         backspace_converting
+        return nil
+      end
+
+      if event == "\t"
+        complete_yomi
+        return nil
+      end
+
+      if event == :btab
+        complete_yomi_backward
         return nil
       end
 
@@ -287,7 +309,11 @@ module Textbringer
       case event
       when "\C-g"
         discard_roman_preview
-        cancel_converting
+        if completion_active?
+          cancel_completion
+        else
+          cancel_converting
+        end
         nil
       when "\C-j"
         discard_roman_preview
@@ -485,6 +511,7 @@ module Textbringer
       @okuri_roman = nil
       @okuri_start_pos = nil
       @roman_buffer = +""
+      reset_completion
       with_target_buffer do |buffer|
         @marker_pos = buffer.point
         buffer.insert("▽")
@@ -670,7 +697,97 @@ module Textbringer
       commit_converting
     end
 
+    # Mirrors ddskk's skk-comp (SKK manual section 6.4): completes the yomi
+    # from the user dictionary's okuri-nasi keys only, most recently
+    # confirmed first. TAB starts a completion, or advances it if the buffer
+    # still shows the previous completion's result unchanged.
+    def complete_yomi
+      unless @roman_buffer.empty?
+        show_completion_message("There remains a kana prefix")
+        return
+      end
+      return unless @okuri_start_pos.nil?
+
+      if completion_active?
+        advance_completion(1)
+      else
+        @comp_prefix = current_yomi
+        ensure_user_dictionary_loaded
+        @comp_candidates = @user_okurinasi.keys.select { |k| k.start_with?(@comp_prefix) }
+        @comp_index = -1
+        advance_completion(1)
+      end
+    end
+
+    def complete_yomi_backward
+      if @comp_candidates
+        advance_completion(-1)
+      else
+        Window.beep
+        show_completion_message(
+          "No more previous completions for \"#{current_yomi}\""
+        )
+      end
+    end
+
+    # True while the buffer still shows exactly the candidate the last
+    # completion left it on, i.e. nothing has been edited since.
+    def completion_active?
+      @comp_candidates && @comp_index && @comp_index >= 0 &&
+        @comp_candidates[@comp_index] == current_yomi
+    end
+
+    # Mirrors ddskk's skk-henkan-off-by-quit taking the skk-comp-do branch:
+    # C-g right after a completion only restores the yomi it started from.
+    def cancel_completion
+      with_target_buffer do |buffer|
+        buffer.delete_region(@marker_pos + "▽".bytesize, buffer.point)
+        buffer.insert(@comp_prefix)
+      end
+      reset_completion
+      Window.redisplay
+    end
+
+    def show_completion_message(text)
+      message(text)
+      @comp_message_shown = true
+      Window.redisplay
+    end
+
+    # Like ddskk's skk-comp-circulate (nil by default), stops at either end
+    # instead of wrapping around.
+    def advance_completion(direction)
+      new_index = @comp_index + direction
+      if new_index < 0 || new_index >= @comp_candidates.size
+        Window.beep
+        show_completion_message(
+          if direction < 0
+            "No more previous completions for \"#{@comp_prefix}\""
+          elsif @comp_index == -1
+            "No completions for \"#{@comp_prefix}\""
+          else
+            "No more completions for \"#{@comp_prefix}\""
+          end
+        )
+        return
+      end
+      @comp_index = new_index
+      with_target_buffer do |buffer|
+        buffer.delete_region(@marker_pos + "▽".bytesize, buffer.point)
+        buffer.insert(@comp_candidates[@comp_index])
+      end
+      Window.redisplay
+    end
+
+    def reset_completion
+      @comp_prefix = nil
+      @comp_candidates = nil
+      @comp_index = nil
+    end
+
     def start_selecting
+      reset_completion
+
       # Snapshot the yomi/okurigana now: once selecting replaces the
       # buffer text with a "▼" candidate, the markers no longer delimit them.
       @yomi = current_yomi
@@ -860,13 +977,15 @@ module Textbringer
     end
 
     # Mirrors ddskk's skk-update-jisyo-1: move the confirmed candidate to
-    # the front of its entry (most-recently-used order) and persist
+    # the front of its entry, and the entry itself to the front of the
+    # dictionary (completion walks the keys in that order), then persist
     # immediately, since this SKK implementation has no explicit save
     # command or autosave-count setting yet.
     def learn_candidate(candidate)
       dict = @okuri_roman ? @user_okuriiari : @user_okurinasi
-      entries = dict[@lookup_key] || []
-      dict[@lookup_key] = [candidate] + entries.reject { |c| c == candidate }
+      entries = dict.delete(@lookup_key) || []
+      candidates = [candidate] + entries.reject { |c| c == candidate }
+      dict.replace({ @lookup_key => candidates }.merge(dict))
       save_user_dictionary
     end
 

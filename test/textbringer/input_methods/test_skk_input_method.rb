@@ -786,6 +786,201 @@ class TestSKKInputMethod < Textbringer::TestCase
     assert_equal(["しんご"], @im.instance_variable_get(:@candidates))
   end
 
+  # --- Completing the yomi with TAB (mirrors ddskk's skk-comp, SKK manual
+  # section 6.4): only the user dictionary's okuri-nasi keys are searched,
+  # most recently confirmed first. ---
+
+  def confirm_first_candidate(yomi_keys)
+    yomi_keys.each { |c| @im.handle_event(c) }
+    @im.handle_event(" ")
+    @im.handle_event("\r")
+  end
+
+  def test_confirming_moves_the_yomi_entry_to_front
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+    assert_equal(
+      ";; okuri-ari entries.\n;; okuri-nasi entries.\nかいしゃ /会社/\nかんじ /漢字/\n",
+      File.read(CONFIG[:skk_user_dictionary_path])
+    )
+
+    confirm_first_candidate(%w[K a n j i])
+    assert_equal(
+      ";; okuri-ari entries.\n;; okuri-nasi entries.\nかんじ /漢字/\nかいしゃ /会社/\n",
+      File.read(CONFIG[:skk_user_dictionary_path])
+    )
+  end
+
+  def test_tab_completes_most_recently_confirmed_first
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    @im.handle_event("\t")
+    assert_match(/▽かいしゃ\z/, @buffer.to_s)
+    @im.handle_event("\t")
+    assert_match(/▽かんじ\z/, @buffer.to_s)
+  end
+
+  def test_tab_stops_at_the_last_candidate_without_circulating
+    # ddskk's skk-comp-circulate is nil by default.
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    3.times { @im.handle_event("\t") }
+    assert_match(/▽かんじ\z/, @buffer.to_s)
+  end
+
+  def test_shift_tab_goes_back_to_the_previous_candidate
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    2.times { @im.handle_event("\t") }
+    @im.handle_event(:btab)
+    assert_match(/▽かいしゃ\z/, @buffer.to_s)
+  end
+
+  def test_tab_with_no_completions_leaves_the_yomi_unchanged
+    @im.handle_event("Z")
+    @im.handle_event("a")
+    @im.handle_event("\t")
+    assert_equal("▽ざ", @buffer.to_s)
+    assert_equal(:converting, @im.instance_variable_get(:@phase))
+    assert_equal(["No completions for \"ざ\""], Window.echo_area.window.contents)
+  end
+
+  def test_tab_with_no_more_completions_paints_the_message
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    3.times { @im.handle_event("\t") }
+    assert_equal(["No more completions for \"か\""], Window.echo_area.window.contents)
+  end
+
+  def test_shift_tab_at_the_first_candidate_paints_no_more_previous_completions
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    @im.handle_event("\t")
+    @im.handle_event(:btab)
+    assert_match(/▽かいしゃ\z/, @buffer.to_s)
+    assert_equal(
+      ["No more previous completions for \"か\""],
+      Window.echo_area.window.contents
+    )
+  end
+
+  def test_shift_tab_before_any_completion_paints_no_more_previous_completions
+    @im.handle_event("K")
+    @im.handle_event("a")
+    @im.handle_event(:btab)
+    assert_equal("▽か", @buffer.to_s)
+    assert_equal(
+      ["No more previous completions for \"か\""],
+      Window.echo_area.window.contents
+    )
+  end
+
+  def test_a_completion_message_is_cleared_by_the_next_key
+    # ddskk clears it on any key, TAB and Shift-TAB included.
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    3.times { @im.handle_event("\t") }
+    assert_equal(["No more completions for \"か\""], Window.echo_area.window.contents)
+
+    @im.handle_event(:btab)
+    assert_match(/▽かいしゃ\z/, @buffer.to_s)
+    assert_equal([""], Window.echo_area.window.contents)
+  end
+
+  def test_a_completion_message_is_cleared_when_conversion_starts
+    confirm_first_candidate(%w[K a n j i])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    2.times { @im.handle_event("\t") }
+    assert_equal(["No more completions for \"か\""], Window.echo_area.window.contents)
+
+    @im.handle_event(" ")
+    assert_match(/▼漢字\z/, @buffer.to_s)
+    assert_equal([""], Window.echo_area.window.contents)
+  end
+
+  def test_tab_refuses_with_unconfirmed_romaji
+    confirm_first_candidate(%w[K a n j i])
+
+    @im.handle_event("K") # "k" is still a buffered romaji prefix
+    @im.handle_event("\t")
+    assert_match(/▽k\z/, @buffer.to_s)
+    assert_equal(["There remains a kana prefix"], Window.echo_area.window.contents)
+  end
+
+  def test_editing_after_completion_starts_a_fresh_completion
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    @im.handle_event("\t")
+    assert_match(/▽かいしゃ\z/, @buffer.to_s)
+    @im.handle_event("\C-h")
+    assert_match(/▽かいし\z/, @buffer.to_s)
+    @im.handle_event("\t")
+    assert_match(/▽かいしゃ\z/, @buffer.to_s)
+  end
+
+  def test_ctrl_g_right_after_completion_only_undoes_the_completion
+    # Mirrors ddskk's skk-henkan-off-by-quit taking the skk-comp-do branch.
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    @im.handle_event("\t")
+    assert_match(/▽かいしゃ\z/, @buffer.to_s)
+    @im.handle_event("\C-g")
+    assert_match(/▽か\z/, @buffer.to_s)
+    assert_equal(:converting, @im.instance_variable_get(:@phase))
+  end
+
+  def test_ctrl_g_after_editing_a_completion_cancels_the_conversion
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    @im.handle_event("\t")
+    @im.handle_event("\C-h")
+    @im.handle_event("\C-g")
+    assert_equal(:normal, @im.instance_variable_get(:@phase))
+  end
+
+  def test_ctrl_g_after_completion_clears_the_message
+    confirm_first_candidate(%w[K a n j i])
+    confirm_first_candidate(%w[K a i s h a])
+
+    @im.handle_event("K")
+    @im.handle_event("a")
+    3.times { @im.handle_event("\t") }
+    assert_equal(["No more completions for \"か\""], Window.echo_area.window.contents)
+
+    @im.handle_event("\C-g")
+    assert_nil(Window.echo_area.message)
+    assert_equal([""], Window.echo_area.window.contents)
+  end
+
   # --- Toggling yomi to katakana with "q" (ddskk's skk-toggle-characters) ---
 
   def test_q_converts_yomi_to_katakana_and_commits
